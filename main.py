@@ -1,129 +1,237 @@
-import numpy as np
-from scipy.integrate import solve_ivp
-import tkinter as tk
-from tkinter import ttk
+from dash import Dash, dcc, html, Input, Output
 import plotly.graph_objects as go
-import plotly.offline as pyo
+from plotly.subplots import make_subplots
+import numpy as np
 
-# Parametry poczatkowe
-V_nom = 3.85  # nominalne napięcie baterii (V)
-R_int = 0.1  # rez wewnętrzna (ohm)
-eta_ladowanie = 0.9  # sprawnosc ladowania
-time_span_charge = [0, 3]  # czas symulacji (h)
-
+# Słownik z parametrami telefonów
 smartphones = {
-    "iPhone 14 - 3A (5V)": {"Q_max": 3.279, "I_charge": 3.0},
-    "iPhone 14 - 2.22A (9V)": {"Q_max": 3.279, "I_charge": 2.22},
-    "Samsung Galaxy S23 - 3A (5V)": {"Q_max": 3.9, "I_charge": 3.0},
-    "Samsung Galaxy S23 - 2.77A (9V)": {"Q_max": 3.9, "I_charge": 2.77},
-    "Google Pixel 7 - 2.5A (5V)": {"Q_max": 4.0, "I_charge": 2.5},
-    "Google Pixel 7 - 2.0A (9V)": {"Q_max": 4.0, "I_charge": 2.0},
-    "OnePlus 11 - 3.0A (5V)": {"Q_max": 4.5, "I_charge": 3.0},
-    "OnePlus 11 - 2.5A (9V)": {"Q_max": 4.5, "I_charge": 2.5},
+    "iPhone 8": {"Q_max": 1.821, "V_nom": 3.82, "I_max": 3.14, "P_max": 12},
+    "iPhone X": {"Q_max": 2.716, "V_nom": 3.81, "I_max": 4.7, "P_max": 18},
+    "iPhone 11": {"Q_max": 3.110, "V_nom": 3.83, "I_max": 4.7, "P_max": 18},
+    "iPhone 12": {"Q_max": 2.815, "V_nom": 3.83, "I_max": 5.2, "P_max": 20},
+    "iPhone 13": {"Q_max": 3.240, "V_nom": 3.83, "I_max": 6.0, "P_max": 23},
+    "iPhone 14": {"Q_max": 3.279, "V_nom": 3.83, "I_max": 6.5, "P_max": 25},
+    "iPhone 15": {"Q_max": 3.349, "V_nom": 3.83, "I_max": 6.5, "P_max": 25},
+    "iPhone 16": {"Q_max": 3.561, "V_nom": 3.83, "I_max": 6.5, "P_max": 25},
 }
 
-class PID:
-    def __init__(self, kp, ti, td, setpoint=100):
-        self.kp = kp
-        self.ti = ti
-        self.td = td
-        self.setpoint = setpoint
-        self.integral = 0
-        self.previous_error = 0
 
-    def compute(self, measured_value, dt):
-        error = self.setpoint - measured_value
-        p = self.kp * error
-        if self.ti != 0:
-            self.integral += error * dt / self.ti
-        i = self.kp * self.integral
-        d = self.kp * self.td * (error - self.previous_error) / dt if dt > 0 else 0
-        self.previous_error = error
-        output = p + i + d
-        return output  # Nie wprowadzono limitu
+def advanced_voltage_model(q, Q_max, V_nom, V_min=3.0, V_max=4.2):
+    """
+    Bardziej zaawansowany model napięcia baterii litowo-jonowej
 
-def battery_dynamics_nonlinear(t, Q, I, Q_max, eta_ladowanie, pid_controller, dt):
-    battery_percentage = to_percentage(Q, Q_max)
-    I_adjusted = pid_controller.compute(battery_percentage, dt)
-    I_effective = eta_ladowanie * I_adjusted * (1 - Q / Q_max)
-    dQdt = I_effective
-    return dQdt
+    Parametry:
+    q: aktualny ładunek (Ah)
+    Q_max: maksymalna pojemność baterii (Ah)
+    V_nom: nominalne napięcie baterii (V)
+    V_min: minimalne napięcie baterii (V)
+    V_max: maksymalne napięcie baterii (V)
 
-def to_percentage(Q, Q_max):
-    return (Q / Q_max) * 100
+    Zwraca: napięcie baterii w danym momencie ładowania
+    """
+    # Normalizacja ładunku
+    soc = q / Q_max
 
-def plot_charging_process():
-    smartphone_name = smartphone_var.get()
-    Q0_charge = q0_charge_var.get()
-    Q_max = smartphones[smartphone_name]["Q_max"]
-    I_charge = smartphones[smartphone_name]["I_charge"]
-    Q0 = Q0_charge / 100 * Q_max
-    pid_controller = PID(kp=0.1, ti=4.0, td=0.1) #parametry regulatora
-    time_eval = np.linspace(time_span_charge[0], time_span_charge[1], 100)
-    dt = time_eval[1] - time_eval[0]
-    sol_ladowanie = solve_ivp(
-        lambda t, Q: battery_dynamics_nonlinear(t, Q, I_charge, Q_max, eta_ladowanie, pid_controller, dt),
-        time_span_charge,
-        [Q0],
-        t_eval=time_eval
+    # Model krzywej ładowania baterii litowo-jonowej
+    # Krzywa przypominająca kształt sigmoidy
+    if soc < 0.2:
+        # Powolny wzrost napięcia na początku ładowania
+        voltage = V_min + (V_nom - V_min) * (soc / 0.2) ** 2
+    elif soc < 0.8:
+        # Prawie liniowy wzrost napięcia
+        voltage = V_nom
+    else:
+        # Spowolnienie wzrostu napięcia pod koniec ładowania
+        voltage = V_max - (V_max - V_nom) * np.exp(-(soc - 0.8) / 0.2)
+
+    return voltage
+
+
+def simulate_charging(phone, charger_power, start_percent, end_percent):
+    phone_params = smartphones[phone]
+    Q_max = phone_params["Q_max"]  # Pojemność baterii (Ah)
+    V_nom = phone_params["V_nom"]  # Napięcie nominalne (V)
+    P_max = min(phone_params["P_max"], charger_power)  # Ograniczenie mocy (W)
+
+    time = []  # Czas w minutach
+    current = []  # Prąd ładowania (A)
+    power = []  # Moc ładowania (W)
+    voltage = []  # Napięcie (V)
+    charge = []  # Naładowanie (%)
+
+    start_charge = start_percent / 100 * Q_max  # Ładunek początkowy (Ah)
+    end_charge = end_percent / 100 * Q_max  # Ładunek końcowy (Ah)
+
+    dt = 1  # Krok czasowy (minuta)
+    t = 0
+    q = start_charge
+
+    # Próg przejścia do fazy CV
+    cv_threshold = 0.8 * Q_max
+
+    # Minimalny próg prądu ładowania
+    min_current = 0.25  # 0.1A
+
+    while q < end_charge:
+        # Dynamiczne obliczanie napięcia
+        V_current = advanced_voltage_model(q, Q_max, V_nom)
+
+        # Faza stałego prądu (CC)
+        if q < cv_threshold:
+            I = min(P_max / V_current, phone_params["I_max"])
+        # Faza stałego napięcia (CV)
+        else:
+            # Nieliniowa redukcja prądu w fazie CV
+            remaining_capacity = end_charge - q
+            cv_factor = np.exp(-5 * (q - cv_threshold) / (0.2 * Q_max))
+            I = min(
+                cv_factor * P_max / V_current,  # Zmniejszanie prądu wykładniczo
+                remaining_capacity / (dt / 60),  # Ograniczenie aby nie przekroczyć końcowej pojemności
+                phone_params["I_max"]  # Ograniczenie maksymalnego prądu telefonu
+            )
+
+        # Ustaw minimalny prąd ładowania
+        I = max(I, min_current)
+
+        P = I * V_current  # Moc ładowania
+
+        time.append(t)
+        current.append(I)
+        power.append(P)
+        voltage.append(V_current)
+        charge.append(q / Q_max * 100)
+
+        dq = I * (dt / 60)  # Przyrost ładunku (Ah)
+        q += dq
+        t += dt
+
+    return time, current, power, voltage, charge
+
+
+# Inicjalizacja aplikacji Dash
+app = Dash(__name__)
+
+app.layout = html.Div(
+    style={"display": "flex", "flex-direction": "row"},
+    children=[
+        # Lewa kolumna: Wybór parametrów
+        html.Div(
+            style={"flex": "25%", "padding": "20px", "border-right": "1px solid #ddd"},
+            children=[
+                html.H1("Symulacja Ładowania Baterii Smartphone'a", style={"textAlign": "center", "fontFamily": "Comic Sans MS"}),
+
+                html.Label("Wybierz Model Smartphone'a:", style={"fontFamily": "Comic Sans MS"}),
+                dcc.Dropdown(
+                    id="phone",
+                    options=[{"label": model, "value": model} for model in smartphones.keys()],
+                    value="iPhone 16",
+                    style={"margin-bottom": "20px"},
+                    clearable=False
+                ),
+
+                html.Label("Wybierz Moc Ładowarki:", style={"fontFamily": "Comic Sans MS"}),
+                dcc.Dropdown(
+                    id="charger_power",
+                    options=[{"label": f"{power}W", "value": power} for power in [5, 12, 20, 30]],
+                    value=30,
+                    style={"margin-bottom": "20px"},
+                    clearable=False
+                ),
+
+                html.Label("Początkowy Stan (%) Baterii:", style={"fontFamily": "Comic Sans MS"}),
+                html.Div(
+                    children=[
+                        dcc.Slider(
+                            id="start_percent",
+                            min=0,
+                            max=100,
+                            step=1,
+                            value=0,
+                            marks={i: f"{i}%" for i in range(0, 101, 25)},
+                            tooltip={"placement": "bottom", "always_visible": False}
+                        ),
+                    ],
+                    style={"margin-bottom": "20px"}
+                ),
+
+                html.Label("Do Ilu % Chcesz Naładować:", style={"fontFamily": "Comic Sans MS"}),
+                html.Div(
+                    children=[
+                        dcc.Slider(
+                            id="end_percent",
+                            min=80,
+                            max=100,
+                            step=1,
+                            value=80,
+                            marks={i: f"{i}%" for i in range(80, 101, 5)},
+                            tooltip={"placement": "bottom", "always_visible": False}
+                        ),
+                    ],
+                    style={"margin-bottom": "20px"}
+                )
+            ]
+        ),
+
+        # Prawa kolumna: Wykresy
+        html.Div(
+            style={"flex": "75%", "padding": "20px"},
+            children=[
+                dcc.Graph(id="charging_graph")
+            ]
+        )
+    ]
+)
+
+
+@app.callback(
+    Output("charging_graph", "figure"),
+    Input("phone", "value"),
+    Input("charger_power", "value"),
+    Input("start_percent", "value"),
+    Input("end_percent", "value")
+)
+def update_graph(phone, charger_power, start_percent, end_percent):
+    if start_percent >= end_percent:
+        fig = go.Figure()
+        fig.update_layout(
+            title="Błąd! Stan początkowy baterii nie może być wyższy od stanu końcowego.",
+            xaxis_title="Time (minutes)",
+            yaxis_title="Value"
+        )
+        return fig
+
+    time, current, power, voltage, charge = simulate_charging(phone, charger_power, start_percent, end_percent)
+
+    # Układ wykresów w 2x2
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=("Zmiana Prądu w Czasie", "Zmiana Mocy w Czasie", "Zmiana Napięcia w Czasie", "Poziom Naładowania Baterii:")
     )
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=sol_ladowanie.t,
-                             y=to_percentage(sol_ladowanie.y[0], Q_max),
-                             mode='lines', name='Stan naładowania'))
-    fig.update_layout(title='Stan naładowania baterii',
-                      xaxis_title='Czas (h)',
-                      yaxis_title='Procent Baterii (%)',
-                      showlegend=True)
-    pyo.iplot(fig)
 
-# GUI
-def increase_q0_charge():
-    if q0_charge_var.get() < 100:
-        q0_charge_var.set(q0_charge_var.get() + 1)
+    # Dodanie wykresów do odpowiednich miejsc z ustawieniem min na 0
+    fig.add_trace(go.Scatter(x=time, y=current, mode='lines', name='Prąd (A)'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=time, y=power, mode='lines', name='Moc (W)'), row=1, col=2)
+    fig.add_trace(go.Scatter(x=time, y=voltage, mode='lines', name='Napięcie (V)'), row=2, col=1)
+    fig.add_trace(go.Scatter(x=time, y=charge, mode='lines', name='Poziom Baterii (%)'), row=2, col=2)
 
-def decrease_q0_charge():
-    if q0_charge_var.get() > 0:
-        q0_charge_var.set(q0_charge_var.get() - 1)
+    # Aktualizacja osi
+    fig.update_xaxes(title_text="Czas (minuty)", row=1, col=1)
+    fig.update_xaxes(title_text="Czas (minuty)", row=1, col=2)
+    fig.update_xaxes(title_text="Czas (minuty)", row=2, col=1)
+    fig.update_xaxes(title_text="Czas (minuty)", row=2, col=2)
 
-def increase_q0_charge_10():
-    if q0_charge_var.get() <= 90:
-        q0_charge_var.set(q0_charge_var.get() + 10)
+    fig.update_yaxes(title_text="Prąd (A)", row=1, col=1, rangemode='tozero')
+    fig.update_yaxes(title_text="Moc (W)", row=1, col=2, rangemode='tozero')
+    fig.update_yaxes(title_text="Napięcie (V)", row=2, col=1, rangemode='tozero')
+    fig.update_yaxes(title_text="Poziom Baterii (%)", row=2, col=2, rangemode='tozero')
 
-def decrease_q0_charge_10():
-    if q0_charge_var.get() >= 10:
-        q0_charge_var.set(q0_charge_var.get() - 10)
+    fig.update_layout(
+        title=f"Symulacja ładowania baterii dla: {phone}, ładowarką o mocy {charger_power}W",
+        height=800
+    )
 
-# Ustawienia GUI
-root = tk.Tk()
-root.title("Symulacja procesu ładowania baterii")
-root.geometry("350x100")
-root.minsize(350, 100)
+    return fig
 
-smartphone_label = tk.Label(root, text="Wybierz smartfon:", font=("TkDefaultFont", 8, "bold"))
-smartphone_label.grid(row=0, column=0, padx=10, pady=5, sticky='w')
-smartphone_var = tk.StringVar(value=list(smartphones.keys())[0])
-smartphone_dropdown = ttk.Combobox(root, textvariable=smartphone_var, values=list(smartphones.keys()))
-smartphone_dropdown.grid(row=0, column=1, columnspan=5, padx=5, pady=5, sticky='ew')
 
-q0_charge_label = tk.Label(root, text="Aktualny % baterii:", font=("TkDefaultFont", 8, "bold"))
-q0_charge_label.grid(row=1, column=0, padx=10, pady=5, sticky='w')
-q0_charge_var = tk.IntVar(value=10)
-q0_charge_display = tk.Label(root, textvariable=q0_charge_var, fg="green", font=("TkDefaultFont", 8, "bold"))
-q0_charge_display.grid(row=1, column=1, padx=10, pady=5, sticky='w')
-
-decrease_button_10 = tk.Button(root, text="-10", command=decrease_q0_charge_10)
-decrease_button_10.grid(row=1, column=2, padx=5)
-decrease_button = tk.Button(root, text="-", command=decrease_q0_charge)
-decrease_button.grid(row=1, column=3, padx=5)
-increase_button = tk.Button(root, text="+", command=increase_q0_charge)
-increase_button.grid(row=1, column=4, padx=5)
-increase_button_10 = tk.Button(root, text="+10", command=increase_q0_charge_10)
-increase_button_10.grid(row=1, column=5, padx=5)
-
-plot_button = tk.Button(root, text="Generuj wykresy", command=plot_charging_process)
-plot_button.grid(row=2, column=0, columnspan=6, padx=5, pady=5, sticky='ew')
-
-root.grid_columnconfigure(1, weight=1)
-
-root.mainloop()
+if __name__ == "__main__":
+    app.run_server(debug=True)
