@@ -1,4 +1,7 @@
 # Repozytorium Projektu na MiSwIS
+## Authors:
+- Jędrzej Czujewicz
+- Bartosz Duszyński
 ## Sources:
 1. [https://docs.duckietown.com/ente/course-intro-to-drones/pid-controllers/project/altitude-pid-simulation.html](https://docs.duckietown.com/ente/course-intro-to-drones/pid-controllers/project/altitude-pid-simulation.html)
 2. [https://wm.pb.edu.pl/actamechanica/wp-content/uploads/sites/18/2023/12/04_2023_108_SZCZESNIAK_CEDRO_WIECZORKOWSKI_AMA-D-23-00079R1.pdf](https://wm.pb.edu.pl/actamechanica/wp-content/uploads/sites/18/2023/12/04_2023_108_SZCZESNIAK_CEDRO_WIECZORKOWSKI_AMA-D-23-00079R1.pdf)
