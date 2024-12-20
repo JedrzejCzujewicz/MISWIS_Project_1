@@ -1,4 +1,4 @@
-# Repozytorium Projektu na MiSwIS
+# Repozytorium Projektu z przedmiotu Monitoring i Sterowanie w Inżynierii Środowiska
 ## Authors:
 - Jędrzej Czujewicz
 - Bartosz Duszyński
